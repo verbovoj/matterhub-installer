@@ -59,10 +59,11 @@ ARCHIVE_FILE=""      # Локальный путь к скачанному ар�
 AUTO_YES=false       # --yes / -y — автоподтверждение
 
 # ─── Утилиты ─────────────────────────────────────────────────────────
-log()  { echo -e "${GREEN}[✓]${NC} $*"; echo "[$(date +%T)] OK   $*" >> "$LOG"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; echo "[$(date +%T)] WARN $*" >> "$LOG"; }
-err()  { echo -e "${RED}[✗]${NC} $*"; echo "[$(date +%T)] ERR  $*" >> "$LOG"; }
-info() { echo -e "${CYAN}[i]${NC} $*"; echo "[$(date +%T)] INFO $*" >> "$LOG"; }
+# ВСЕ сообщения выводятся в stderr, чтобы не мешать command substitution $(...)
+log()  { echo -e "${GREEN}[✓]${NC} $*" >&2; echo "[$(date +%T)] OK   $*" >> "$LOG"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*" >&2; echo "[$(date +%T)] WARN $*" >> "$LOG"; }
+err()  { echo -e "${RED}[✗]${NC} $*" >&2; echo "[$(date +%T)] ERR  $*" >> "$LOG"; }
+info() { echo -e "${CYAN}[i]${NC} $*" >&2; echo "[$(date +%T)] INFO $*" >> "$LOG"; }
 
 ask() {
     local prompt="$1" default="${2:-}" result
@@ -1101,6 +1102,15 @@ restart_apache() {
 }
 
 find_nginx_config_for_domain() {
+    # 0. HestiaCP / VestaCP — конфиги в /home/USER/conf/web/DOMAIN/
+    if [[ -n "$_DOMAIN" ]]; then
+        for base in /home/*/conf/web/$_DOMAIN; do
+            for f in "$base/nginx.conf" "$base/nginx.ssl.conf"; do
+                if [[ -f "$f" ]]; then echo "$f"; return; fi
+            done
+        done
+    fi
+
     # 1. По точному имени домена
     if [[ -n "$_DOMAIN" ]]; then
         for f in "/etc/nginx/sites-available/$_DOMAIN" \
@@ -1137,6 +1147,12 @@ find_nginx_config_for_domain() {
 create_default_nginx_vhost() {
     # Создаёт минимальный Nginx server-блок для работы по IP (без домена)
     [[ ! -d /etc/nginx ]] && { echo ""; return; }
+
+    # Если есть панель управления — НЕ создаём свой vhost (панель управляет Nginx)
+    if [[ "$PANEL" != "none" && -n "$PANEL" ]]; then
+        info "Панель $PANEL управляет Nginx — пропускаем создание default vhost"
+        echo ""; return
+    fi
 
     local fpm_sock
     fpm_sock=$(find_php_fpm_socket)
