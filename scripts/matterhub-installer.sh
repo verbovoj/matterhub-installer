@@ -13,6 +13,26 @@
 # ║  • Отдельный FPM-пул «matterhub» со своим сокетом                    ║
 # ║  • Nginx location только для тура, не трогает другие сайты           ║
 # ╚═══════════════════════════════════════════════════════════════════════╝
+
+# ─── Обработка curl | bash (stdin занят пайпом) ──────────────────────
+# Если скрипт запущен через пайп, сохраняем его и перезапускаем нормально
+if [ ! -t 0 ]; then
+    _SELF="/tmp/matterhub-installer-$$.sh"
+    cat > "$_SELF" < /dev/stdin 2>/dev/null || true
+    # Если файл пуст (весь stdin уже прочитан bash), используем $0
+    if [ ! -s "$_SELF" ] && [ -f "$0" ]; then
+        cp "$0" "$_SELF"
+    fi
+    # Если всё ещё пуст — скрипт пришёл через пайп целиком, сохраняем себя
+    if [ ! -s "$_SELF" ]; then
+        # Скрипт уже загружен bash в память — скачиваем заново
+        _URL="https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-installer.sh"
+        curl -sSL "$_URL" -o "$_SELF" 2>/dev/null || wget -qO "$_SELF" "$_URL" 2>/dev/null
+    fi
+    chmod +x "$_SELF"
+    exec bash "$_SELF" "$@" < /dev/tty
+fi
+
 set -euo pipefail
 
 # ─── Цвета ───────────────────────────────────────────────────────────
