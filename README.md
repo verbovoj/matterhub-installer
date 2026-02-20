@@ -1,38 +1,60 @@
-# MatterHub Export
+# MatterHub Tour Installer
 
-Универсальный автоустановщик 3D-туров MatterHub на Linux-серверы.
+Универсальный автоустановщик 3D-туров MatterHub на Linux-серверы.  
+**Одна команда — всё работает.**
 
-## Скрипт
+---
 
-`scripts/matterhub-installer.sh` — интерактивный установщик v3.0
+## Быстрая установка (одна команда)
 
-### Возможности
-
-- Работает на любом Linux-сервере: Apache / Nginx / Nginx+Apache (reverse proxy)
-- Поддержка панелей: HestiaCP, VestaCP, ISPmanager, cPanel, Plesk, без панели
-- Изолированная установка PHP 8.2 параллельно другим версиям
-- ionCube Loader — автоматическая установка
-- Отдельный FPM-пул «matterhub» со своим сокетом
-- Nginx location только для тура — не трогает другие сайты
-- Автоматический откат при ошибках
-
-### Использование
+Подключитесь к серверу по SSH от root и выполните:
 
 ```bash
-# Интерактивный режим
-sudo bash scripts/matterhub-installer.sh
-
-# С параметрами
-sudo bash scripts/matterhub-installer.sh --url https://example.com/tour.zip --dir /var/www/html/tour
-
-# Автоподтверждение (без вопросов)
-sudo bash scripts/matterhub-installer.sh --url https://example.com/tour.zip --yes
+curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-installer.sh | sudo bash -s -- --url "ССЫЛКА_НА_АРХИВ"
 ```
 
-### Требования (на целевом сервере)
+Замените `ССЫЛКА_НА_АРХИВ` на URL вашего .zip файла с туром.
 
-- Linux (Ubuntu/Debian, CentOS/RHEL)
-- root-доступ
-- unzip, wget/curl
-- PHP 8.2+ (устанавливается автоматически если нет)
-- ionCube Loader (устанавливается автоматически если нет)
+### Примеры
+
+```bash
+# Интерактивный режим (скрипт спросит всё сам)
+curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-installer.sh | sudo bash
+
+# С указанием URL архива (скрипт спросит куда ставить)
+curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-installer.sh | sudo bash -s -- --url "https://example.com/EpfRaivJYbB.zip"
+
+# Полностью автоматически (без вопросов)
+curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-installer.sh | sudo bash -s -- --url "https://example.com/tour.zip" --dir /var/www/html/tour --yes
+```
+
+---
+
+## Что делает скрипт
+
+1. Проверяет и устанавливает **PHP 8.2** (параллельно существующему PHP — ничего не ломает)
+2. Проверяет и устанавливает **ionCube Loader**
+3. Определяет веб-сервер (Nginx / Apache) и панель управления
+4. Скачивает архив тура по URL
+5. Распаковывает в выбранную директорию
+6. Настраивает права, FPM-пул, конфиг веб-сервера
+7. Проверяет что тур открывается
+
+## Поддерживаемые конфигурации
+
+- **Веб-серверы:** Apache, Nginx, Nginx+Apache (reverse proxy)
+- **Панели:** HestiaCP, VestaCP, ISPmanager, cPanel, Plesk, без панели
+- **ОС:** Ubuntu/Debian, CentOS/RHEL
+
+## Принцип — изолированная установка
+
+- PHP 8.2 ставится **параллельно** другим версиям
+- Отдельный FPM-пул «matterhub» со своим сокетом
+- Nginx location только для тура — не трогает другие сайты
+- Автоматический **откат** при ошибках
+
+## Требования
+
+- Linux-сервер с root-доступом
+- `curl` или `wget` (для скачивания)
+- Всё остальное устанавливается автоматически
