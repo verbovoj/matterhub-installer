@@ -51,6 +51,7 @@ PHP_BIN=""           # /usr/bin/php8.3
 IONCUBE_OK=false
 PANEL=""             # hestia | vesta | ispmanager | cpanel | plesk | none
 PANEL_BIN=""         # /usr/local/hestia/bin  (если есть)
+TOUR_TYPE="php"      # php | html (определяется при распаковке)
 
 # Вводимые пользователем
 INSTALL_DIR=""       # Куда распаковывать тур
@@ -201,23 +202,52 @@ check_dependencies() {
     # --- Результат ---
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo ""
-        err "Отсутствуют компоненты: ${missing[*]}"
-        echo ""
+        # Проверяем: если не хватает только PHP/ionCube, не блокируем (для HTML-туров они не нужны)
+        local critical_missing=()
+        local php_missing=()
+        for item in "${missing[@]}"; do
+            case "$item" in
+                php*|ionCube) php_missing+=("$item") ;;
+                *)            critical_missing+=("$item") ;;
+            esac
+        done
 
-        local can_autoinstall=false
-        if command -v apt-get &>/dev/null || command -v yum &>/dev/null || command -v dnf &>/dev/null; then
-            can_autoinstall=true
+        if [[ ${#php_missing[@]} -gt 0 ]]; then
+            warn "Не найдены: ${php_missing[*]} (нужны только для PHP-туров, для HTML-туров — не требуются)"
         fi
 
-        if $can_autoinstall && confirm "Установить недостающие компоненты автоматически?"; then
-            install_missing "${missing[@]}"
-        else
-            echo ""
-            info "Установите вручную:"
-            info "  Ubuntu/Debian: apt install unzip wget php8.2-fpm php8.2-cli php8.2-{curl,mbstring,xml,gd,zip}"
-            info "  CentOS/RHEL:   yum install unzip wget php82-fpm php82-cli php-{curl,mbstring,xml,gd,zip}"
-            info "  ionCube:       https://www.ioncube.com/loaders.php"
-            exit 1
+        if [[ ${#critical_missing[@]} -gt 0 ]]; then
+            err "Отсутствуют компоненты: ${critical_missing[*]}"
+        fi
+
+        # Автоустановка нужна если есть критические или PHP-компоненты
+        local need_install=("${critical_missing[@]}" "${php_missing[@]}")
+        if [[ ${#need_install[@]} -gt 0 ]]; then
+            local can_autoinstall=false
+            if command -v apt-get &>/dev/null || command -v yum &>/dev/null || command -v dnf &>/dev/null; then
+                can_autoinstall=true
+            fi
+
+            if [[ ${#critical_missing[@]} -gt 0 ]]; then
+                # Критические — обязательно ставим
+                if $can_autoinstall && confirm "Установить недостающие компоненты автоматически?"; then
+                    install_missing "${need_install[@]}"
+                else
+                    echo ""
+                    info "Установите вручную:"
+                    info "  Ubuntu/Debian: apt install unzip wget php8.2-fpm php8.2-cli php8.2-{curl,mbstring,xml,gd,zip}"
+                    info "  CentOS/RHEL:   yum install unzip wget php82-fpm php82-cli php-{curl,mbstring,xml,gd,zip}"
+                    info "  ionCube:       https://www.ioncube.com/loaders.php"
+                    exit 1
+                fi
+            else
+                # Только PHP/ionCube — предлагаем но не блокируем
+                if $can_autoinstall && confirm "Установить PHP/ionCube? (можно пропустить для HTML-туров)"; then
+                    install_missing "${php_missing[@]}"
+                else
+                    info "Пропущено. Если тур PHP — установите PHP вручную."
+                fi
+            fi
         fi
     fi
 }
@@ -909,35 +939,50 @@ unpack_tour() {
         exit 1
     fi
 
-    # Ищем корень тура (где index.php)
+    # Ищем корень тура (index.php для MatterHub PHP, index.html для Matterport)
     local tour_root=""
+    # Сначала ищем PHP-тур
     if [[ -f "$tmp_dir/index.php" ]]; then
-        tour_root="$tmp_dir"
+        tour_root="$tmp_dir"; TOUR_TYPE="php"
     else
         local found
         found=$(find "$tmp_dir" -maxdepth 3 -name "index.php" -type f 2>/dev/null | head -1)
-        [[ -n "$found" ]] && tour_root=$(dirname "$found")
+        if [[ -n "$found" ]]; then
+            tour_root=$(dirname "$found"); TOUR_TYPE="php"
+        fi
+    fi
+    # Если PHP не найден — ищем HTML (Matterport self-hosted)
+    if [[ -z "$tour_root" ]]; then
+        if [[ -f "$tmp_dir/index.html" ]]; then
+            tour_root="$tmp_dir"; TOUR_TYPE="html"
+        else
+            local found
+            found=$(find "$tmp_dir" -maxdepth 3 -name "index.html" -type f 2>/dev/null | head -1)
+            if [[ -n "$found" ]]; then
+                tour_root=$(dirname "$found"); TOUR_TYPE="html"
+            fi
+        fi
     fi
 
     if [[ -z "$tour_root" ]]; then
-        # Показываем что реально есть в архиве для диагностики
         warn "Содержимое архива (верхний уровень):"
         find "$tmp_dir" -maxdepth 2 -type f -name "index.*" 2>/dev/null | while read f; do
             warn "  $(echo "$f" | sed "s|$tmp_dir/||")"
         done >&2
-        local top_dirs
-        top_dirs=$(find "$tmp_dir" -mindepth 1 -maxdepth 2 -type d 2>/dev/null | head -10 | sed "s|$tmp_dir/||")
-        [[ -n "$top_dirs" ]] && warn "Папки: $top_dirs"
-        err "index.php не найден в архиве. Убедитесь, что архив создан с index.php!"
+        err "Ни index.php, ни index.html не найдены в архиве."
         rm -rf "$tmp_dir"
         exit 1
     fi
 
     # Валидация
-    if head -3 "$tour_root/index.php" | grep -qi "ioncube\|SG_FREE_LOADER"; then
-        log "index.php: ionCube-encoded"
+    if [[ "$TOUR_TYPE" == "php" ]]; then
+        if head -3 "$tour_root/index.php" | grep -qi "ioncube\|SG_FREE_LOADER"; then
+            log "index.php: ionCube-encoded (MatterHub PHP-тур)"
+        else
+            warn "index.php: ionCube-кодировка не обнаружена"
+        fi
     else
-        warn "index.php: ionCube-кодировка не обнаружена"
+        log "index.html: Matterport HTML-тур (PHP не требуется)"
     fi
 
     if [[ -f "$tour_root/.htaccess" ]]; then
@@ -993,7 +1038,33 @@ configure_webserver() {
     echo -e "${BOLD}${BLUE}=== НАСТРОЙКА ВЕБ-СЕРВЕРА ===${NC}"
     echo ""
 
-    # Создаём изолированный FPM-пул для MatterHub (если нужен)
+    # HTML-тур не требует PHP-FPM
+    if [[ "$TOUR_TYPE" == "html" ]]; then
+        info "HTML-тур: PHP-FPM не требуется, настраиваю статику"
+        case "$WEB_SERVER" in
+            nginx|nginx+apache)
+                local nginx_conf
+                nginx_conf=$(find_nginx_config_for_domain)
+                if [[ -z "$nginx_conf" ]]; then
+                    nginx_conf=$(create_default_nginx_vhost 2>/dev/null || true)
+                fi
+                if [[ -n "$nginx_conf" ]]; then
+                    inject_nginx_html_location "$nginx_conf"
+                else
+                    warn "Nginx-конфиг не найден. Настройте location вручную."
+                fi
+                ;;
+            apache)
+                info "Apache: тур доступен через DirectoryIndex index.html"
+                ;;
+            *)
+                warn "Веб-сервер не определён, пробуйте открыть тур напрямую"
+                ;;
+        esac
+        return
+    fi
+
+    # PHP-тур: создаём FPM-пул
     create_matterhub_fpm_pool
 
     case "$WEB_SERVER" in
@@ -1379,6 +1450,80 @@ inject_nginx_location() {
     fi
 }
 
+inject_nginx_html_location() {
+    local conf="$1"
+
+    if grep -q "location /$_SLUG" "$conf" 2>/dev/null; then
+        warn "location /$_SLUG уже есть в $conf"
+        if ! confirm "Заменить?"; then return; fi
+        remove_nginx_location "$conf"
+    fi
+
+    # Бэкап
+    local bak="${conf}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$conf" "$bak"
+    register_rollback "cp '$bak' '$conf' && nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null"
+    log "Бэкап Nginx: $bak"
+
+    local block=""
+    block="${block}
+    # --- MatterHub HTML: /\${_SLUG} ---
+    location /\${_SLUG}/js {
+        root \${_WEBROOT};
+        try_files \$uri =404;
+        expires 30d;
+        add_header Cache-Control \"public, immutable\";
+    }
+
+    location /\${_SLUG}/css {
+        root \${_WEBROOT};
+        try_files \$uri =404;
+        expires 30d;
+    }
+
+    location /\${_SLUG}/models {
+        root \${_WEBROOT};
+        try_files \$uri =404;
+        expires 7d;
+    }
+
+    location /\${_SLUG}/images {
+        root \${_WEBROOT};
+        try_files \$uri =404;
+        expires 30d;
+    }
+
+    location /\${_SLUG}/fonts {
+        root \${_WEBROOT};
+        try_files \$uri =404;
+        expires 30d;
+    }
+
+    location = /\${_SLUG} {
+        return 301 /\${_SLUG}/;
+    }
+
+    location /\${_SLUG}/ {
+        root \${_WEBROOT};
+        index index.html;
+        try_files \$uri \$uri/ /\${_SLUG}/index.html;
+    }
+    # --- /MatterHub HTML ---"
+
+    do_inject_block "$conf" "$block"
+    sync_nginx_conf "$conf"
+
+    if nginx -t 2>>"$LOG"; then
+        systemctl reload nginx
+        log "Nginx: HTML location /${_SLUG} добавлен"
+    else
+        err "Ошибка Nginx! Восстанавливаю бэкап..."
+        cp "$bak" "$conf"
+        sync_nginx_conf "$conf"
+        nginx -t && systemctl reload nginx
+    fi
+}
+
 inject_nginx_static_only() {
     local conf="$1"
 
@@ -1582,18 +1727,28 @@ print_result() {
     echo -e "  ${BOLD}Директория:${NC}  $INSTALL_DIR"
     [[ -n "$url" ]] && echo -e "  ${BOLD}URL:${NC}         ${CYAN}$url${NC}"
     echo -e "  ${BOLD}Веб-сервер:${NC}  $WEB_SERVER"
-    echo -e "  ${BOLD}PHP:${NC}         $PHP_VER"
-    echo -e "  ${BOLD}ionCube:${NC}     $(if $IONCUBE_OK; then echo -e "${GREEN}да${NC}"; else echo -e "${RED}нет${NC}"; fi)"
+    echo -e "  ${BOLD}Тип тура:${NC}    ${CYAN}$TOUR_TYPE${NC}"
+    if [[ "$TOUR_TYPE" == "php" ]]; then
+        echo -e "  ${BOLD}PHP:${NC}         $PHP_VER"
+        echo -e "  ${BOLD}ionCube:${NC}     $(if $IONCUBE_OK; then echo -e "${GREEN}да${NC}"; else echo -e "${RED}нет${NC}"; fi)"
+    else
+        echo -e "  ${BOLD}PHP:${NC}         не требуется (HTML-тур)"
+    fi
     echo -e "  ${BOLD}Панель:${NC}      $PANEL"
     echo -e "  ${BOLD}Лог:${NC}         $LOG"
     echo ""
     [[ -n "$url" ]] && echo -e "  ${YELLOW}-> Откройте: $url${NC}"
     echo ""
     echo -e "  ${CYAN}Если не работает:${NC}"
-    echo -e "    1. PHP + ionCube: php -m | grep -i ioncube"
-    echo -e "    2. Apache: AllowOverride All"
-    echo -e "    3. PHP: default_charset = UTF-8"
-    echo -e "    4. Лог: cat $LOG"
+    if [[ "$TOUR_TYPE" == "php" ]]; then
+        echo -e "    1. PHP + ionCube: php -m | grep -i ioncube"
+        echo -e "    2. Apache: AllowOverride All"
+        echo -e "    3. PHP: default_charset = UTF-8"
+    else
+        echo -e "    1. Проверьте Nginx location: nginx -T | grep ${_SLUG}"
+        echo -e "    2. Проверьте index.html: ls -la $INSTALL_DIR/index.html"
+    fi
+    echo -e "    Лог: cat $LOG"
     echo ""
 }
 
@@ -1677,8 +1832,12 @@ main() {
     echo -e "${BOLD}-- Итого --${NC}"
     echo -e "  Директория: ${CYAN}$INSTALL_DIR${NC}"
     echo -e "  Веб-сервер: ${CYAN}$WEB_SERVER${NC}"
-    echo -e "  PHP:        ${CYAN}$PHP_VER${NC}"
-    echo -e "  ionCube:    $(if $IONCUBE_OK; then echo -e "${GREEN}да${NC}"; else echo -e "${RED}нет${NC}"; fi)"
+    if [[ "$TOUR_TYPE" == "php" ]]; then
+        echo -e "  PHP:        ${CYAN}$PHP_VER${NC}"
+        echo -e "  ionCube:    $(if $IONCUBE_OK; then echo -e "${GREEN}да${NC}"; else echo -e "${RED}нет${NC}"; fi)"
+    else
+        echo -e "  Тип:        ${CYAN}HTML-тур (PHP не нужен)${NC}"
+    fi
     echo ""
 
     if ! confirm "Продолжить установку?"; then
