@@ -840,6 +840,22 @@ download_archive() {
     local url="$1"
     ARCHIVE_FILE="/tmp/matterhub_$(date +%s).zip"
 
+    # ── Определяем ожидаемый размер через HEAD-запрос ──
+    local expected_size=""
+    if command -v curl &>/dev/null; then
+        expected_size=$(curl -sSI -L --connect-timeout 10 "$url" 2>/dev/null \
+            | grep -i '^content-length' | tail -1 | tr -dc '0-9')
+    elif command -v wget &>/dev/null; then
+        expected_size=$(wget --spider --server-response "$url" 2>&1 \
+            | grep -i 'content-length' | tail -1 | tr -dc '0-9')
+    fi
+
+    if [[ -n "$expected_size" ]] && [[ "$expected_size" -gt 0 ]] 2>/dev/null; then
+        local human_size
+        human_size=$(numfmt --to=iec "$expected_size" 2>/dev/null || echo "${expected_size} bytes")
+        info "Ожидаемый размер: $human_size"
+    fi
+
     info "Скачиваю: $url"
     if command -v wget &>/dev/null; then
         wget -q --show-progress -O "$ARCHIVE_FILE" "$url" 2>&1 | tail -1
@@ -848,6 +864,26 @@ download_archive() {
     fi
 
     register_rollback "rm -f '$ARCHIVE_FILE'"
+
+    # ── Проверяем полноту скачивания ──
+    local actual_size
+    actual_size=$(stat -c%s "$ARCHIVE_FILE" 2>/dev/null || stat -f%z "$ARCHIVE_FILE" 2>/dev/null || echo "0")
+
+    if [[ "$actual_size" -lt 1024 ]] 2>/dev/null; then
+        err "Скачанный файл слишком мал (${actual_size} байт). Проверьте URL и доступ."
+        exit 1
+    fi
+
+    if [[ -n "$expected_size" ]] && [[ "$expected_size" -gt 0 ]] 2>/dev/null; then
+        if [[ "$actual_size" -ne "$expected_size" ]]; then
+            local actual_h expect_h
+            actual_h=$(numfmt --to=iec "$actual_size" 2>/dev/null || echo "${actual_size}")
+            expect_h=$(numfmt --to=iec "$expected_size" 2>/dev/null || echo "${expected_size}")
+            err "Файл скачался не полностью: $actual_h из $expect_h. Проверьте сеть и повторите."
+            exit 1
+        fi
+    fi
+
     log "Скачано: $(du -sh "$ARCHIVE_FILE" | cut -f1)"
 }
 
@@ -873,27 +909,47 @@ unpack_tour() {
         exit 1
     fi
 
-    # Ищем корень тура (где index.php)
-    local tour_root=""
+    # Ищем корень тура (где index.php или index.html)
+    local tour_root="" tour_type=""
+    # Сначала ищем PHP-тур (MatterHub)
     if [[ -f "$tmp_dir/index.php" ]]; then
-        tour_root="$tmp_dir"
+        tour_root="$tmp_dir"; tour_type="php"
     else
         local found
         found=$(find "$tmp_dir" -maxdepth 3 -name "index.php" -type f 2>/dev/null | head -1)
-        [[ -n "$found" ]] && tour_root=$(dirname "$found")
+        if [[ -n "$found" ]]; then
+            tour_root=$(dirname "$found"); tour_type="php"
+        fi
+    fi
+    # Если PHP не найден — ищем HTML-тур (Matterport self-hosted)
+    if [[ -z "$tour_root" ]]; then
+        if [[ -f "$tmp_dir/index.html" ]]; then
+            tour_root="$tmp_dir"; tour_type="html"
+        else
+            local found
+            found=$(find "$tmp_dir" -maxdepth 3 -name "index.html" -type f 2>/dev/null | head -1)
+            if [[ -n "$found" ]]; then
+                tour_root=$(dirname "$found"); tour_type="html"
+            fi
+        fi
     fi
 
     if [[ -z "$tour_root" ]]; then
-        err "index.php не найден в архиве. Это не MatterHub-тур?"
+        err "Ни index.php, ни index.html не найдены в архиве. Это не тур?"
         rm -rf "$tmp_dir"
         exit 1
     fi
 
     # Валидация
-    if head -3 "$tour_root/index.php" | grep -qi "ioncube\|SG_FREE_LOADER"; then
-        log "index.php: ionCube-encoded"
+    if [[ "$tour_type" == "php" ]]; then
+        if head -3 "$tour_root/index.php" | grep -qi "ioncube\|SG_FREE_LOADER"; then
+            log "index.php: ionCube-encoded"
+        else
+            warn "index.php: ionCube-кодировка не обнаружена"
+        fi
     else
-        warn "index.php: ionCube-кодировка не обнаружена"
+        log "index.html: Matterport HTML-тур"
+        IONCUBE_OK=true  # ionCube не нужен для HTML-туров
     fi
 
     if [[ -f "$tour_root/.htaccess" ]]; then
