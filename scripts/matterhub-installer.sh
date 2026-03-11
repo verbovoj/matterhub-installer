@@ -1043,15 +1043,20 @@ configure_webserver() {
         info "HTML-тур: PHP-FPM не требуется, настраиваю статику"
         case "$WEB_SERVER" in
             nginx|nginx+apache)
-                local nginx_conf
-                nginx_conf=$(find_nginx_config_for_domain)
-                if [[ -z "$nginx_conf" ]]; then
-                    nginx_conf=$(create_default_nginx_vhost 2>/dev/null || true)
-                fi
-                if [[ -n "$nginx_conf" ]]; then
+                local conf_count=0
+                while IFS= read -r nginx_conf; do
+                    [[ -z "$nginx_conf" ]] && continue
                     inject_nginx_html_location "$nginx_conf"
-                else
-                    warn "Nginx-конфиг не найден. Настройте location вручную."
+                    conf_count=$((conf_count+1))
+                done < <(find_all_nginx_configs)
+                if [[ $conf_count -eq 0 ]]; then
+                    local nginx_conf
+                    nginx_conf=$(create_default_nginx_vhost 2>/dev/null || true)
+                    if [[ -n "$nginx_conf" ]]; then
+                        inject_nginx_html_location "$nginx_conf"
+                    else
+                        warn "Nginx-конфиг не найден. Настройте location вручную."
+                    fi
                 fi
                 ;;
             apache)
@@ -1147,20 +1152,22 @@ configure_nginx_standalone() {
 configure_nginx_proxy_static() {
     info "Nginx+Apache: добавляю location с PHP-FPM (статика + PHP-роутинг)"
 
-    local nginx_conf
-    nginx_conf=$(find_nginx_config_for_domain)
+    local conf_count=0
+    while IFS= read -r nginx_conf; do
+        [[ -z "$nginx_conf" ]] && continue
+        inject_nginx_location "$nginx_conf"
+        conf_count=$((conf_count+1))
+    done < <(find_all_nginx_configs)
 
-    if [[ -z "$nginx_conf" ]]; then
-        # Попробуем создать default vhost
+    if [[ $conf_count -eq 0 ]]; then
+        local nginx_conf
         nginx_conf=$(create_default_nginx_vhost)
         if [[ -z "$nginx_conf" ]]; then
             info "Nginx-конфиг не найден -- Apache обработает всё через proxy"
             return
         fi
+        inject_nginx_location "$nginx_conf"
     fi
-
-    # Полный location (PHP-FPM + статика), т.к. Apache-бэкенд может не обрабатывать этот путь
-    inject_nginx_location "$nginx_conf"
 }
 
 configure_apache_checks() {
@@ -1214,6 +1221,27 @@ restart_apache() {
     elif systemctl is-active --quiet httpd 2>/dev/null; then
         systemctl reload httpd 2>>"$LOG" && log "httpd перезагружен"
     fi
+}
+
+# Возвращает ВСЕ nginx-конфиги домена (HTTP + SSL) через \n
+find_all_nginx_configs() {
+    local configs=()
+    # HestiaCP / VestaCP
+    if [[ -n "$_DOMAIN" ]]; then
+        for base in /home/*/conf/web/$_DOMAIN; do
+            for f in "$base/nginx.conf" "$base/nginx.ssl.conf"; do
+                [[ -f "$f" ]] && configs+=("$f")
+            done
+        done
+    fi
+    if [[ ${#configs[@]} -gt 0 ]]; then
+        printf '%s\n' "${configs[@]}"
+        return
+    fi
+    # Fallback: обычный поиск
+    local single
+    single=$(find_nginx_config_for_domain)
+    [[ -n "$single" ]] && echo "$single"
 }
 
 find_nginx_config_for_domain() {
