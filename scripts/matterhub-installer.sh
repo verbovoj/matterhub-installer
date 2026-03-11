@@ -1642,7 +1642,10 @@ sync_nginx_conf() {
 # ЭТАП 8: ПРОВЕРКИ
 # ═══════════════════════════════════════════════════════════════════════
 
-run_checks() {
+run_checks() (
+    # Подоболочка + set +e — ошибки проверки не убивают скрипт
+    set +e
+
     echo ""
     echo -e "${BOLD}${BLUE}=== ПРОВЕРКА ===${NC}"
     echo ""
@@ -1658,7 +1661,7 @@ run_checks() {
         url="http://$ip/$_SLUG"
     fi
 
-    sleep 1
+    sleep 2
 
     # Главная (с trailing slash!)
     info "Проверяю $url/ ..."
@@ -1666,7 +1669,7 @@ run_checks() {
     code=$(curl -sSk -o /dev/null -w "%{http_code}" "$url/" 2>/dev/null || echo "000")
     size=$(curl -sSk -o /dev/null -w "%{size_download}" "$url/" 2>/dev/null || echo "0")
 
-    if [[ "$code" == "200" && "$size" -gt 500 ]]; then
+    if [[ "$code" == "200" ]] && [[ "$size" -gt 500 ]] 2>/dev/null; then
         log "HTTP $code ($size байт)"
     elif [[ "$code" == "500" ]]; then
         err "HTTP 500 -- проверьте PHP и ionCube"
@@ -1675,24 +1678,35 @@ run_checks() {
         err "HTTP 403 -- проверьте права"
         errors=$((errors+1))
     elif [[ "$code" == "404" ]]; then
-        err "HTTP 404 -- маршрутизация не работает"
+        warn "HTTP 404 -- тур ещё не отвечает (может потребоваться перезапуск Nginx/Apache)"
         errors=$((errors+1))
     else
         warn "HTTP $code ($size байт)"
         [[ "$code" != "200" ]] && errors=$((errors+1))
     fi
 
-    # Статика
-    local css_file
-    css_file=$(find "$INSTALL_DIR/resources/css/" -name "*.css" -type f 2>/dev/null | head -1)
-    if [[ -n "$css_file" ]]; then
-        local css_name
-        css_name=$(basename "$css_file")
-        code=$(curl -sSk -o /dev/null -w "%{http_code}" "$url/resources/css/$css_name" 2>/dev/null || echo "000")
+    # Статика — адаптируемся к типу тура
+    local static_file="" static_url=""
+    if [[ "$TOUR_TYPE" == "html" ]]; then
+        # HTML-тур: проверяем js/
+        static_file=$(find "$INSTALL_DIR/js/" -name "*.js" -type f 2>/dev/null | head -1)
+        if [[ -n "$static_file" ]]; then
+            static_url="$url/js/$(basename "$static_file")"
+        fi
+    else
+        # PHP-тур: проверяем resources/css/
+        static_file=$(find "$INSTALL_DIR/resources/css/" -name "*.css" -type f 2>/dev/null | head -1)
+        if [[ -n "$static_file" ]]; then
+            static_url="$url/resources/css/$(basename "$static_file")"
+        fi
+    fi
+
+    if [[ -n "$static_url" ]]; then
+        code=$(curl -sSk -o /dev/null -w "%{http_code}" "$static_url" 2>/dev/null || echo "000")
         if [[ "$code" == "200" ]]; then
             log "Статика: HTTP $code"
         else
-            err "Статика: HTTP $code"
+            warn "Статика: HTTP $code ($static_url)"
             errors=$((errors+1))
         fi
     fi
@@ -1701,7 +1715,29 @@ run_checks() {
     if [[ $errors -eq 0 ]]; then
         log "Все проверки пройдены!"
     else
-        warn "Проблем: $errors (лог: $LOG)"
+        warn "Проблем: $errors -- тур установлен, проверьте конфигурацию вручную"
+        warn "  Лог: $LOG"
+        if [[ "$TOUR_TYPE" == "html" ]]; then
+            info "  Проверьте: nginx -T | grep $_SLUG"
+            info "  Файлы: ls $INSTALL_DIR/index.html"
+        fi
+    fi
+
+    return 0
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# ОЧИСТКА
+# ═══════════════════════════════════════════════════════════════════════
+
+cleanup_archive() {
+    if [[ -n "$ARCHIVE_FILE" ]] && [[ -f "$ARCHIVE_FILE" ]] && [[ "$ARCHIVE_FILE" == /tmp/* ]]; then
+        local sz
+        sz=$(du -sh "$ARCHIVE_FILE" 2>/dev/null | cut -f1)
+        if confirm "Удалить скачанный архив? ($ARCHIVE_FILE, $sz)"; then
+            rm -f "$ARCHIVE_FILE"
+            log "Архив удалён: $ARCHIVE_FILE"
+        fi
     fi
 }
 
@@ -1857,13 +1893,16 @@ main() {
     # 8. Веб-сервер (изолированно!)
     configure_webserver
 
-    # 9. Проверка
-    run_checks
-
-    # OK -- убираем rollback
+    # 9. Убираем rollback ПЕРЕД проверкой — тур установлен, откат не нужен
     trap - EXIT
 
-    # 10. Результат
+    # 10. Проверка (информативная, не блокирует)
+    run_checks || true
+
+    # 11. Очистка архива
+    cleanup_archive
+
+    # 12. Результат
     print_result
 }
 
