@@ -909,47 +909,35 @@ unpack_tour() {
         exit 1
     fi
 
-    # Ищем корень тура (где index.php или index.html)
-    local tour_root="" tour_type=""
-    # Сначала ищем PHP-тур (MatterHub)
+    # Ищем корень тура (где index.php)
+    local tour_root=""
     if [[ -f "$tmp_dir/index.php" ]]; then
-        tour_root="$tmp_dir"; tour_type="php"
+        tour_root="$tmp_dir"
     else
         local found
         found=$(find "$tmp_dir" -maxdepth 3 -name "index.php" -type f 2>/dev/null | head -1)
-        if [[ -n "$found" ]]; then
-            tour_root=$(dirname "$found"); tour_type="php"
-        fi
-    fi
-    # Если PHP не найден — ищем HTML-тур (Matterport self-hosted)
-    if [[ -z "$tour_root" ]]; then
-        if [[ -f "$tmp_dir/index.html" ]]; then
-            tour_root="$tmp_dir"; tour_type="html"
-        else
-            local found
-            found=$(find "$tmp_dir" -maxdepth 3 -name "index.html" -type f 2>/dev/null | head -1)
-            if [[ -n "$found" ]]; then
-                tour_root=$(dirname "$found"); tour_type="html"
-            fi
-        fi
+        [[ -n "$found" ]] && tour_root=$(dirname "$found")
     fi
 
     if [[ -z "$tour_root" ]]; then
-        err "Ни index.php, ни index.html не найдены в архиве. Это не тур?"
+        # Показываем что реально есть в архиве для диагностики
+        warn "Содержимое архива (верхний уровень):"
+        find "$tmp_dir" -maxdepth 2 -type f -name "index.*" 2>/dev/null | while read f; do
+            warn "  $(echo "$f" | sed "s|$tmp_dir/||")"
+        done >&2
+        local top_dirs
+        top_dirs=$(find "$tmp_dir" -mindepth 1 -maxdepth 2 -type d 2>/dev/null | head -10 | sed "s|$tmp_dir/||")
+        [[ -n "$top_dirs" ]] && warn "Папки: $top_dirs"
+        err "index.php не найден в архиве. Убедитесь, что архив создан с index.php!"
         rm -rf "$tmp_dir"
         exit 1
     fi
 
     # Валидация
-    if [[ "$tour_type" == "php" ]]; then
-        if head -3 "$tour_root/index.php" | grep -qi "ioncube\|SG_FREE_LOADER"; then
-            log "index.php: ionCube-encoded"
-        else
-            warn "index.php: ionCube-кодировка не обнаружена"
-        fi
+    if head -3 "$tour_root/index.php" | grep -qi "ioncube\|SG_FREE_LOADER"; then
+        log "index.php: ionCube-encoded"
     else
-        log "index.html: Matterport HTML-тур"
-        IONCUBE_OK=true  # ionCube не нужен для HTML-туров
+        warn "index.php: ionCube-кодировка не обнаружена"
     fi
 
     if [[ -f "$tour_root/.htaccess" ]]; then
