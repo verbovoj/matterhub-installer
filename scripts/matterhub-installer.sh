@@ -1495,46 +1495,46 @@ inject_nginx_html_location() {
 
     local block=""
     block="${block}
-    # --- MatterHub HTML: /\${_SLUG} ---
-    location /\${_SLUG}/js {
-        root \${_WEBROOT};
+    # --- MatterHub HTML: /${_SLUG} ---
+    location /${_SLUG}/js {
+        root ${_WEBROOT};
         try_files \$uri =404;
         expires 30d;
         add_header Cache-Control \"public, immutable\";
     }
 
-    location /\${_SLUG}/css {
-        root \${_WEBROOT};
+    location /${_SLUG}/css {
+        root ${_WEBROOT};
         try_files \$uri =404;
         expires 30d;
     }
 
-    location /\${_SLUG}/models {
-        root \${_WEBROOT};
+    location /${_SLUG}/models {
+        root ${_WEBROOT};
         try_files \$uri =404;
         expires 7d;
     }
 
-    location /\${_SLUG}/images {
-        root \${_WEBROOT};
+    location /${_SLUG}/images {
+        root ${_WEBROOT};
         try_files \$uri =404;
         expires 30d;
     }
 
-    location /\${_SLUG}/fonts {
-        root \${_WEBROOT};
+    location /${_SLUG}/fonts {
+        root ${_WEBROOT};
         try_files \$uri =404;
         expires 30d;
     }
 
-    location = /\${_SLUG} {
-        return 301 /\${_SLUG}/;
+    location = /${_SLUG} {
+        return 301 /${_SLUG}/;
     }
 
-    location /\${_SLUG}/ {
-        root \${_WEBROOT};
+    location /${_SLUG}/ {
+        root ${_WEBROOT};
         index index.html;
-        try_files \$uri \$uri/ /\${_SLUG}/index.html;
+        try_files \$uri \$uri/ /${_SLUG}/index.html;
     }
     # --- /MatterHub HTML ---"
 
