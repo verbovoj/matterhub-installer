@@ -83,10 +83,11 @@ Matterport HTML Tour Installer v1.0
   matterhub-html-installer.sh [OPTIONS]
 
 Опции:
-  -a, --archive URL|PATH   URL или путь к ZIP-архиву Matterport HTML экспорта
-  -d, --domain DOMAIN      Домен сайта (напр. yr2.ru)
-  -s, --slug SLUG          URL-слаг тура (напр. jr4uZUoEhzK)
-  -w, --webroot PATH       Путь к webroot (авто-определение если не указан)
+  --url URL                URL или путь к ZIP-архиву (слаг из имени файла)
+  -a, --archive URL|PATH   Аналог --url
+  -d, --domain DOMAIN      Домен сайта (авто-определение из Nginx)
+  -s, --slug SLUG          URL-слаг тура (авто-определение из имени архива)
+  -w, --webroot PATH       Путь к webroot (авто-определение)
   -n, --nginx-conf PATH    Путь к конфигу Nginx (авто-определение)
   -p, --php-sock PATH      Путь к PHP-FPM сокету (авто-определение)
   -y, --yes                Автоподтверждение всех вопросов
@@ -94,9 +95,17 @@ Matterport HTML Tour Installer v1.0
   -h, --help               Показать справку
 
 Примеры:
-  matterhub-html-installer.sh -a https://example.com/tour.zip -d yr2.ru -s mySlug
-  matterhub-html-installer.sh -a ./tour.zip -d yr2.ru -s mySlug -w /var/www/yr2.ru
+  # Один флаг — слаг и домен определятся автоматически:
+  matterhub-html-installer.sh --url https://s16.matterhub.ru/downloads/jr4uZUoEhzK.zip --yes
+
+  # Явный домен и слаг:
+  matterhub-html-installer.sh -a ./tour.zip -d yr2.ru -s mySlug
+
+  # Деинсталляция:
   matterhub-html-installer.sh --uninstall -d yr2.ru -s mySlug
+
+  # curl | bash:
+  curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-html-installer.sh | sudo bash -s -- --url "https://example.com/jr4uZUoEhzK.zip" --yes
 EOF
     exit 0
 }
@@ -105,7 +114,7 @@ EOF
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -a|--archive)    ARCHIVE_SRC="$2"; shift 2 ;;
+            --url|-a|--archive) ARCHIVE_SRC="$2"; shift 2 ;;
             -d|--domain)     DOMAIN="$2"; shift 2 ;;
             -s|--slug)       SLUG="$2"; shift 2 ;;
             -w|--webroot)    WEBROOT="$2"; shift 2 ;;
@@ -124,6 +133,29 @@ validate_slug() {
     if [[ ! "$SLUG" =~ ^[a-zA-Z0-9]{4,}$ ]]; then
         err "Слаг '$SLUG' некорректен (буквы и цифры, минимум 4 символа)"
     fi
+}
+
+# ─── Авто-определение домена из Nginx конфигов ───────────────────────
+auto_detect_domain() {
+    local detected=""
+    for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
+        [[ -f "$f" ]] || continue
+        local sn
+        sn=$(grep -oP 'server_name\s+\K[^;]+' "$f" 2>/dev/null | head -1 | awk '{print $1}')
+        [[ -z "$sn" || "$sn" == "_" || "$sn" == "localhost" ]] && continue
+        # Проверяем что webroot для этого домена существует
+        for wr in \
+            "/home/admin/web/${sn}/public_html" \
+            "/var/www/${sn}/data/www/${sn}" \
+            "/var/www/${sn}/public_html" \
+            "/var/www/${sn}"; do
+            if [[ -d "$wr" ]]; then
+                detected="$sn"
+                break 2
+            fi
+        done
+    done
+    echo "$detected"
 }
 
 # ─── Определение окружения ───────────────────────────────────────────
@@ -721,6 +753,26 @@ main() {
         [[ -z "$DOMAIN" || -z "$SLUG" ]] && err "Для деинсталляции нужны --domain и --slug"
         do_uninstall
         exit 0
+    fi
+
+    # Авто-извлечение slug из имени архива
+    if [[ -z "$SLUG" && -n "$ARCHIVE_SRC" ]]; then
+        local fname
+        fname=$(basename "$ARCHIVE_SRC")
+        fname="${fname%%.*}"
+        fname=$(echo "$fname" | tr -cd '[:alnum:]_-')
+        if [[ -n "$fname" ]]; then
+            SLUG="$fname"
+            info "Слаг из имени архива: $SLUG"
+        fi
+    fi
+
+    # Авто-определение домена
+    if [[ -z "$DOMAIN" ]]; then
+        DOMAIN=$(auto_detect_domain)
+        if [[ -n "$DOMAIN" ]]; then
+            info "Домен определён из Nginx: $DOMAIN"
+        fi
     fi
 
     # Интерактивный ввод
