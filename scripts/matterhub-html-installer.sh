@@ -49,10 +49,10 @@ AUTO_YES=false
 DO_UNINSTALL=false
 INSTALL_DIR=""
 
-# ─── Логирование ─────────────────────────────────────────────────────
-log()  { echo -e "${GREEN}[✓]${NC} $*"; echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; }
-info() { echo -e "${BLUE}[i]${NC} $*"; echo "[$(date '+%H:%M:%S')] INFO: $*" >> "$LOG"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; echo "[$(date '+%H:%M:%S')] WARN: $*" >> "$LOG"; }
+# ─── Логирование (всё в stderr, чтобы не ломать $() captures) ────────
+log()  { echo -e "${GREEN}[✓]${NC} $*" >&2; echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; }
+info() { echo -e "${BLUE}[i]${NC} $*" >&2; echo "[$(date '+%H:%M:%S')] INFO: $*" >> "$LOG"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*" >&2; echo "[$(date '+%H:%M:%S')] WARN: $*" >> "$LOG"; }
 err()  { echo -e "${RED}[✗]${NC} $*" >&2; echo "[$(date '+%H:%M:%S')] ERROR: $*" >> "$LOG"; exit 1; }
 
 confirm() {
