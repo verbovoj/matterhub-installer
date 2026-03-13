@@ -430,6 +430,14 @@ ROUTER_PHP
 
     echo -n '{"data":{"currentSession":null}}' > "${INSTALL_DIR}/api/mp/accounts/graph"
     log "accounts/graph stub создан"
+
+    # API v1 stubs (suppress 404 for /api/v1/user/ etc.)
+    mkdir -p "${INSTALL_DIR}/api/v1/user"
+    echo -n '{"data":null}' > "${INSTALL_DIR}/api/v1/user/index.html"
+
+    # Empty JSON fallback for any unmatched API paths
+    echo -n '{"data":null}' > "${api_dir}/graph_empty.json"
+    log "API v1 stubs созданы"
 }
 
 # ─── Генерация nginx блока (bash heredoc — надёжнее для кавычек) ─────
@@ -519,7 +527,7 @@ write_nginx_block() {
             fastcgi_param REQUEST_URI \$request_uri;
         }
 
-        # API — static JSON
+        # API — static JSON (return empty JSON for missing stubs instead of 404)
         location ~* ^/${SLUG}/api/ {
             root ${WEBROOT};
             default_type application/json;
@@ -532,7 +540,7 @@ write_nginx_block() {
                 return 204;
             }
 
-            try_files \$uri \$uri/ =404;
+            try_files \$uri \$uri/ /${SLUG}/api/mp/models/graph_empty.json;
         }
 
         try_files \$uri /${SLUG}/index.html;
