@@ -37,6 +37,8 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 VERSION="1.0.0"
 LOG="/tmp/mh-html-install-$(date +%Y%m%d_%H%M%S).log"
 ROLLBACK=()
+INSTALL_OWNER=""
+INSTALL_GROUP=""
 
 ARCHIVE_SRC=""
 ARCHIVE_FILE=""
@@ -361,13 +363,53 @@ extract_archive() {
     cp -a "$tour_root"/. "$INSTALL_DIR"/
     rm -rf "$tmp_dir"
 
-    # Владелец файлов
-    local web_user="www-data"
-    id "$web_user" &>/dev/null || web_user="nginx"
-    id "$web_user" &>/dev/null || web_user="nobody"
-    chown -R "$web_user":"$web_user" "$INSTALL_DIR" 2>/dev/null || true
+    # Владелец файлов — наследуем от webroot, а не гадаем по сервисному юзеру.
+    # Для панелей вроде Hestia это критично: webroot часто принадлежит admin:admin.
+    local owner group
+    owner=$(stat -c '%U' "$WEBROOT" 2>/dev/null || stat -f '%Su' "$WEBROOT" 2>/dev/null || echo "www-data")
+    group=$(stat -c '%G' "$WEBROOT" 2>/dev/null || stat -f '%Sg' "$WEBROOT" 2>/dev/null || echo "www-data")
+    if [[ -z "$owner" || "$owner" == "root" ]]; then
+        owner="www-data"
+        id "$owner" &>/dev/null || owner="nginx"
+        id "$owner" &>/dev/null || owner="nobody"
+    fi
+    if [[ -z "$group" || "$group" == "root" ]]; then
+        group="$owner"
+    fi
+    INSTALL_OWNER="$owner"
+    INSTALL_GROUP="$group"
+    chown -R "$owner":"$group" "$INSTALL_DIR" 2>/dev/null || true
 
     log "Распаковано: $INSTALL_DIR ($(du -sh "$INSTALL_DIR" | cut -f1))"
+}
+
+bootstrap_av3_resources() {
+    info "Создаю AV3 resources bootstrap..."
+
+    local owner="${INSTALL_OWNER:-}"
+    local group="${INSTALL_GROUP:-}"
+    if [[ -z "$owner" ]]; then
+        owner=$(stat -c '%U' "$WEBROOT" 2>/dev/null || stat -f '%Su' "$WEBROOT" 2>/dev/null || echo "www-data")
+    fi
+    if [[ -z "$group" ]]; then
+        group=$(stat -c '%G' "$WEBROOT" 2>/dev/null || stat -f '%Sg' "$WEBROOT" 2>/dev/null || echo "$owner")
+    fi
+    [[ -z "$owner" || "$owner" == "root" ]] && owner="www-data"
+    [[ -z "$group" || "$group" == "root" ]] && group="$owner"
+
+    mkdir -p "${INSTALL_DIR}/resources/av3_data"
+    mkdir -p "${INSTALL_DIR}/resources/models/avatar"
+    mkdir -p "${INSTALL_DIR}/resources/media/face"
+    mkdir -p "${INSTALL_DIR}/resources/media/video_avatar"
+    mkdir -p "${INSTALL_DIR}/resources/animations"
+    mkdir -p "${INSTALL_DIR}/resources/panorama_override"
+    mkdir -p "${INSTALL_DIR}/resources/output"
+
+    chown -R "$owner:$group" "${INSTALL_DIR}/resources" 2>/dev/null || true
+    find "${INSTALL_DIR}/resources" -type d -exec chmod 775 {} \; 2>/dev/null || true
+    find "${INSTALL_DIR}/resources" -type f -exec chmod 664 {} \; 2>/dev/null || true
+
+    log "AV3 resources bootstrap: OK (${owner}:${group})"
 }
 
 # ─── GraphQL роутер ──────────────────────────────────────────────────
@@ -863,6 +905,7 @@ main() {
 
     download_archive
     extract_archive
+    bootstrap_av3_resources
     create_graph_router
     inject_nginx_block
     verify_install

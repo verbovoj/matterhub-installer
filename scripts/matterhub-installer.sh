@@ -43,6 +43,8 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 VERSION="3.0.0"
 LOG="/tmp/matterhub-install-$(date +%Y%m%d_%H%M%S).log"
 ROLLBACK=()
+INSTALL_OWNER=""
+INSTALL_GROUP=""
 
 # Определяемые автоматически
 WEB_SERVER=""        # nginx | apache | nginx+apache
@@ -1020,6 +1022,11 @@ set_permissions() {
     local owner group
     owner=$(stat -c '%U' "$_WEBROOT" 2>/dev/null || stat -f '%Su' "$_WEBROOT" 2>/dev/null || echo "www-data")
     group=$(stat -c '%G' "$_WEBROOT" 2>/dev/null || stat -f '%Sg' "$_WEBROOT" 2>/dev/null || echo "www-data")
+    [[ -z "$owner" || "$owner" == "root" ]] && owner="www-data"
+    [[ -z "$group" || "$group" == "root" ]] && group="www-data"
+
+    INSTALL_OWNER="$owner"
+    INSTALL_GROUP="$group"
 
     chown -R "$owner:$group" "$INSTALL_DIR"
     find "$INSTALL_DIR" -type d -exec chmod 755 {} \;
@@ -1027,6 +1034,43 @@ set_permissions() {
 
     log "Владелец: $owner:$group"
     log "Директории: 755, файлы: 644"
+}
+
+bootstrap_av3_resources() {
+    echo ""
+    echo -e "${BOLD}${BLUE}=== AV3 BOOTSTRAP ===${NC}"
+    echo ""
+
+    local owner="${INSTALL_OWNER:-}"
+    local group="${INSTALL_GROUP:-}"
+    [[ -z "$owner" ]] && owner=$(stat -c '%U' "$_WEBROOT" 2>/dev/null || stat -f '%Su' "$_WEBROOT" 2>/dev/null || echo "www-data")
+    [[ -z "$group" ]] && group=$(stat -c '%G' "$_WEBROOT" 2>/dev/null || stat -f '%Sg' "$_WEBROOT" 2>/dev/null || echo "www-data")
+    [[ -z "$owner" || "$owner" == "root" ]] && owner="www-data"
+    [[ -z "$group" || "$group" == "root" ]] && group="www-data"
+
+    local dirs=(
+        "$INSTALL_DIR/resources"
+        "$INSTALL_DIR/resources/av3_data"
+        "$INSTALL_DIR/resources/models"
+        "$INSTALL_DIR/resources/models/avatar"
+        "$INSTALL_DIR/resources/media"
+        "$INSTALL_DIR/resources/media/face"
+        "$INSTALL_DIR/resources/media/video_avatar"
+        "$INSTALL_DIR/resources/animations"
+        "$INSTALL_DIR/resources/panorama_override"
+        "$INSTALL_DIR/resources/output"
+    )
+
+    for d in "${dirs[@]}"; do
+        mkdir -p "$d"
+    done
+
+    chown -R "$owner:$group" "$INSTALL_DIR/resources"
+    find "$INSTALL_DIR/resources" -type d -exec chmod 775 {} \;
+    find "$INSTALL_DIR/resources" -type f -exec chmod 664 {} \; 2>/dev/null || true
+
+    log "AV3 resources bootstrap: OK"
+    log "AV3 resources owner: $owner:$group"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1917,6 +1961,9 @@ main() {
 
     # 7. Права
     set_permissions
+
+    # 7.1. AV3 директории и права для upload/config persistence
+    bootstrap_av3_resources
 
     # 8. Веб-сервер (изолированно!)
     configure_webserver
