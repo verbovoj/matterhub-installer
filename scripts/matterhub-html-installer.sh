@@ -136,26 +136,74 @@ validate_slug() {
 }
 
 # ─── Авто-определение домена из Nginx конфигов ───────────────────────
-auto_detect_domain() {
-    local detected=""
+# Собирает ВСЕ домены с валидным webroot (результат через \n)
+auto_detect_all_domains() {
+    local -a found=()
+    local -A seen=()
     for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
         [[ -f "$f" ]] || continue
         local sn
         sn=$(grep -oP 'server_name\s+\K[^;]+' "$f" 2>/dev/null | head -1 | awk '{print $1}')
         [[ -z "$sn" || "$sn" == "_" || "$sn" == "localhost" ]] && continue
-        # Проверяем что webroot для этого домена существует
+        [[ -n "${seen[$sn]:-}" ]] && continue
         for wr in \
             "/home/admin/web/${sn}/public_html" \
             "/var/www/${sn}/data/www/${sn}" \
             "/var/www/${sn}/public_html" \
             "/var/www/${sn}"; do
             if [[ -d "$wr" ]]; then
-                detected="$sn"
-                break 2
+                found+=("$sn")
+                seen[$sn]=1
+                break
             fi
         done
     done
-    echo "$detected"
+    printf '%s\n' "${found[@]}"
+}
+
+# Интерактивный выбор домена: меню если >1, авто если 1, ручной ввод если 0
+choose_domain() {
+    local -a domains=()
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && domains+=("$d")
+    done < <(auto_detect_all_domains)
+
+    if [[ ${#domains[@]} -eq 0 ]]; then
+        echo ""
+        return
+    fi
+
+    if [[ ${#domains[@]} -eq 1 ]]; then
+        info "Домен определён из Nginx: ${domains[0]}"
+        echo "${domains[0]}"
+        return
+    fi
+
+    # Несколько доменов — показываем меню
+    echo "" >&2
+    echo -e "${BOLD}Найдены домены:${NC}" >&2
+    local idx=0
+    for d in "${domains[@]}"; do
+        idx=$((idx+1))
+        echo -e "  ${BOLD}${idx})${NC} ${CYAN}${d}${NC}" >&2
+    done
+    echo "" >&2
+
+    if $AUTO_YES; then
+        # --yes: берём первый, но предупреждаем
+        warn "Несколько доменов — выбран первый: ${domains[0]} (передайте -d ДОМЕН для явного выбора)"
+        echo "${domains[0]}"
+        return
+    fi
+
+    local choice
+    echo -en "${CYAN}[?]${NC} Выберите домен (1-${#domains[@]}): " >&2
+    read -r choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#domains[@]} ]]; then
+        echo "${domains[$((choice-1))]}"
+    else
+        err "Неверный выбор: $choice"
+    fi
 }
 
 # ─── Определение окружения ───────────────────────────────────────────
@@ -769,10 +817,7 @@ main() {
 
     # Авто-определение домена
     if [[ -z "$DOMAIN" ]]; then
-        DOMAIN=$(auto_detect_domain)
-        if [[ -n "$DOMAIN" ]]; then
-            info "Домен определён из Nginx: $DOMAIN"
-        fi
+        DOMAIN=$(choose_domain)
     fi
 
     # Интерактивный ввод
