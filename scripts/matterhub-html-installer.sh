@@ -540,8 +540,8 @@ write_nginx_block() {
         # Remove external Matterport preconnect/prefetch hints
         sub_filter 'https://cdn-2.matterport.com' '';
         sub_filter 'https://events.matterport.com' '';
-        # Inject avatar scripts (files not modified — sub_filter at serve-time)
-        sub_filter '</head>' '<script src="/av3/avatar_inject.js"></script><script src="/av3/ai_avatar.js" defer></script></head>';
+        # Inject avatar scripts + footer fix (files not modified — sub_filter at serve-time)
+        sub_filter '</head>' '<script src="/av3/footer_fix.js"></script><script src="/av3/avatar_inject.js"></script><script src="/av3/ai_avatar.js" defer></script></head>';
         sub_filter_once off;
         sub_filter_types text/html application/javascript text/javascript;
 
