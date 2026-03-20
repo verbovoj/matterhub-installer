@@ -504,8 +504,27 @@ write_nginx_block() {
     }
 
     # ── Root API rewrites for self-hosted HTML tour: ${SLUG} ──
+    # GraphQL: direct fastcgi (rewrite+last can't reach nested locations in ^~ blocks)
+    location ~ ^/api/mp/([a-z]+)/graph\$ {
+        set \$graph_subdir \$1;
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type" always;
+
+        fastcgi_pass unix:${PHP_SOCK};
+        fastcgi_param SCRIPT_FILENAME ${INSTALL_DIR}/api/mp/models/graph_router.php;
+        fastcgi_param GRAPH_SUBDIR \$graph_subdir;
+        include fastcgi_params;
+        fastcgi_param REQUEST_URI \$request_uri;
+    }
+    # Fallback for non-GraphQL /api/mp/ requests (static JSON stubs)
     location /api/mp/ {
-        rewrite ^/api/mp/(.*)\$ /${SLUG}/api/mp/\$1 last;
+        root ${WEBROOT};
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        rewrite ^/api/mp/(.*)\$ /${SLUG}/api/mp/\$1 break;
+        try_files \$uri /${SLUG}/api/mp/models/graph_empty.json;
     }
     location /api/v1/ {
         rewrite ^/api/v1/(.*)\$ /${SLUG}/api/v1/\$1 last;
