@@ -537,6 +537,10 @@ write_nginx_block() {
 
         # Rewrite CDN URLs to local absolute paths
         sub_filter 'https://static.matterport.com/' '/';
+        # Plugin baseUrl fix: relative path -> absolute path (для загрузки self-hosted plugins)
+        sub_filter '"baseUrl":"./showcase-sdk/plugins/published/"' '"baseUrl":"https://${DOMAIN}/${SLUG}/showcase-sdk/plugins/published/"';
+        # Plugin whitelist fix: allow current domain in URL validator
+        sub_filter '"my.matterhub.ru","localhost"' '"my.matterhub.ru","${DOMAIN}","localhost"';
         # Remove external Matterport preconnect/prefetch hints
         sub_filter 'https://cdn-2.matterport.com' '';
         sub_filter 'https://events.matterport.com' '';
@@ -559,6 +563,8 @@ write_nginx_block() {
             add_header Cache-Control "public, no-cache, must-revalidate";
             add_header Access-Control-Allow-Origin "*" always;
             sub_filter 'https://static.matterport.com/' '/';
+            # Plugin whitelist fix for bundled JS modules (packages-cwf-util.js)
+            sub_filter '"my.matterhub.ru","localhost"' '"my.matterhub.ru","${DOMAIN}","localhost"';
             sub_filter_once off;
             sub_filter_types application/javascript text/javascript text/css;
         }
