@@ -954,9 +954,18 @@ resolve_cloud_url() {
                 --data "{\"shortGUIDs\":[{\"value\":\"${guid}\"}]}" \
                 'https://ckdatabasews.icloud.com/database/1/com.apple.cloudkit/production/public/records/resolve' \
                 || true)
-            direct=$(printf '%s' "$resp" | sed -n 's/.*"downloadURL":"\([^"]*\)".*/\1/p' | head -1 || true)
-            [[ -n "$direct" ]] || _rc_fail "iCloud не отдал downloadURL — ссылка точно «для всех»? Ответ: $(printf '%.200s' "${resp:-пусто}")"
+            # Apple отдаёт pretty-printed JSON («"downloadURL" : "…"» с пробелами вокруг ':'),
+            # поэтому шаблон толерантен к пробелам. downloadURL живёт глубоко в resolvedRecord.
+            direct=$(printf '%s' "$resp" | sed -n 's/.*"downloadURL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)
+            [[ -n "$direct" ]] || _rc_fail "iCloud не отдал downloadURL — файл расшарен «для всех, у кого ссылка»? (общая ПАПКА так не работает — расшарь сам файл). Ответ: $(printf '%.200s' "${resp:-пусто}")"
             direct="${direct//\\u0026/&}"
+            # k=_ в URL = файл лежит в ЗАШИФРОВАННОЙ shared-папке (Apple PCS/E2E): ключ
+            # дешифровки анонимно не выдаётся, скачивание вернёт 400 «Invalid encryption key».
+            # Такой файл сервер взять не может в принципе — направляем на рабочие пути.
+            case "$direct" in
+                *'&k=_&'*|*'?k=_&'*|*'&k=_'|*'&k=_'*)
+                    _rc_fail "iCloud: файл в зашифрованной общей ПАПКЕ (E2E), сервер не скачает его анонимно. Расшарь САМ файл (внутри папки → по файлу → «Поделиться»), либо залей на Яндекс.Диск (--url), либо ставь через 'mh-deploy --icloud' (качает Safari на маке)." ;;
+            esac
             local nm ext fpat='${f}'
             nm=$(printf '%s' "$resp" | sed -n 's/.*"name":{"value":"\([^"]*\)".*/\1/p' | head -1 || true)
             ext=$(printf '%s' "$resp" | sed -n 's/.*"extension":{"value":"\([^"]*\)".*/\1/p' | head -1 || true)
