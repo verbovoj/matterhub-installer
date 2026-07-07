@@ -13,21 +13,25 @@
 # ╚═══════════════════════════════════════════════════════════════════════╝
 
 # ─── Обработка curl | bash (stdin занят пайпом) ──────────────────────
-if [ ! -t 0 ]; then
+# _MH_RELAUNCHED предотвращает бесконечный перезапуск: после exec с /dev/null
+# stdin снова НЕ tty → без маркера мы бы вечно перезапускали сами себя.
+if [ ! -t 0 ] && [ -z "${_MH_RELAUNCHED:-}" ]; then
     _SELF="/tmp/mh-html-installer-$$.sh"
     cat > "$_SELF" < /dev/stdin 2>/dev/null || true
     if [ ! -s "$_SELF" ] && [ -f "$0" ]; then
-        cp "$0" "$_SELF"
+        cp "$0" "$_SELF" 2>/dev/null || true
     fi
     if [ ! -s "$_SELF" ]; then
         _URL="https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-html-installer.sh"
         curl -sSL "$_URL" -o "$_SELF" 2>/dev/null || wget -qO "$_SELF" "$_URL" 2>/dev/null
     fi
     chmod +x "$_SELF"
+    export _MH_RELAUNCHED=1
     # /dev/tty ОТКРЫВАЕТСЯ — интерактивный curl|bash (человек за терминалом), читаем ввод с него.
     # Не открывается — ssh без -t / cron / CI: интерактив невозможен, stdin в /dev/null.
     # ВАЖНО: нода /dev/tty существует всегда (`-e` бесполезен), но без управляющего терминала
     # её open() даёт ENXIO «No such device or address» — проверяем именно открываемость.
+    # Маркер _MH_RELAUNCHED переживает exec → второй заход пропустит этот блок (нет петли).
     if ( exec < /dev/tty ) 2>/dev/null; then
         exec bash "$_SELF" "$@" < /dev/tty
     else
