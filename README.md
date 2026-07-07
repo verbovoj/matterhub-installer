@@ -15,6 +15,27 @@ curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/sc
 
 Замените `ССЫЛКА_НА_АРХИВ` на URL вашего .zip файла с туром.
 
+### Облачные ссылки — можно кидать «как есть»
+
+Скрипт сам превращает шаринг-ссылку в прямую скачку. Поддерживаются:
+
+| Сервис | Формат ссылки |
+|---|---|
+| Яндекс.Диск | `https://disk.yandex.ru/d/...`, `https://yadi.sk/...` |
+| Google Drive | `https://drive.google.com/file/d/.../view`, `...open?id=...` |
+| Dropbox | `https://www.dropbox.com/scl/fi/...`, `.../s/...` |
+| iCloud Drive | `https://www.icloud.com/iclouddrive/...` |
+| OneDrive | `https://1drv.ms/...`, `onedrive.live.com/...` |
+| Облако Mail.ru | `https://cloud.mail.ru/public/...` |
+
+Файл должен быть расшарен **«всем, у кого есть ссылка»**. Имя папки тура
+(слаг) берётся из имени файла в облаке — можно переопределить флагом `-s`.
+
+```bash
+# пример: тур лежит на Яндекс.Диске
+curl -sSL https://raw.githubusercontent.com/verbovoj/matterhub-installer/main/scripts/matterhub-html-installer.sh | sudo bash -s -- --url "https://disk.yandex.ru/d/AbCdEf123" --yes
+```
+
 ### Примеры
 
 ```bash

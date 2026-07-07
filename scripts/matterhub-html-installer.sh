@@ -100,6 +100,12 @@ Matterport HTML Tour Installer v1.0
   # Один флаг — слаг и домен определятся автоматически:
   matterhub-html-installer.sh --url https://s16.matterhub.ru/downloads/jr4uZUoEhzK.zip --yes
 
+  # Облачные шаринг-ссылки понимаются напрямую (Яндекс.Диск, Google Drive,
+  # Dropbox, iCloud Drive, OneDrive, Облако Mail.ru):
+  matterhub-html-installer.sh --url "https://disk.yandex.ru/d/AbCdEf123" --yes
+  matterhub-html-installer.sh --url "https://drive.google.com/file/d/1AbC.../view?usp=sharing" --yes
+  matterhub-html-installer.sh --url "https://www.icloud.com/iclouddrive/0abCdE#tour" --yes
+
   # Явный домен и слаг:
   matterhub-html-installer.sh -a ./tour.zip -d yr2.ru -s mySlug
 
@@ -289,6 +295,176 @@ detect_environment() {
     log "Nginx конфиг: $NGINX_CONF"
 }
 
+# ─── Резолвер облачных шаринг-ссылок ─────────────────────────────────
+# Превращает ссылку «поделиться» в прямую ссылку на скачивание.
+# Поддержка: Яндекс.Диск, Google Drive, Dropbox, iCloud Drive, OneDrive,
+# Облако Mail.ru. Прочие URL проходят без изменений.
+# ⚠️ Блок продублирован в обоих скриптах (matterhub-installer.sh и
+#    matterhub-html-installer.sh) — правки вносить синхронно.
+# Вызов: resolve_cloud_url "<url>" → результат в глобалах:
+#   RESOLVED_URL      — прямая ссылка (или исходная, если сервис не облачный)
+#   RESOLVED_FILENAME — имя файла, если сервис его сообщил (для слага)
+RESOLVED_URL=""
+RESOLVED_FILENAME=""
+
+_rc_fail() { err "$*"; exit 1; }
+
+_rc_urlencode() {
+    local s="$1" out="" c i
+    local LC_ALL=C   # байтовая итерация: кириллица и прочий UTF-8 кодируются побайтово
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:$i:1}"
+        case "$c" in
+            [a-zA-Z0-9.~_-]) out+="$c" ;;
+            *) out+=$(printf '%%%02X' "'$c") ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+_rc_urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
+
+# Имя файла из Content-Disposition ($1 = файл с заголовками ответа)
+_rc_cd_filename() {
+    local h f=""
+    h=$(tr -d '\r' < "$1" | grep -i '^content-disposition:' | tail -1 || true)
+    case "$h" in
+        *filename\*=UTF-8\'\'*) f="${h#*filename\*=UTF-8\'\'}"; f="${f%%;*}" ;;
+        *filename=\"*)          f="${h#*filename=\"}";          f="${f%%\"*}" ;;
+        *filename=*)            f="${h#*filename=}";            f="${f%%;*}" ;;
+    esac
+    _rc_urldecode "$f"
+}
+
+# Первые 64КБ по ссылке + заголовки в файл $2 (Range — дёшево даже для гигабайт)
+_rc_probe() {
+    # tr -d '\0': бинарное начало файла содержит null-байты — bash их не переваривает в $()
+    curl -fsSL --connect-timeout 15 --max-time 40 -r 0-65535 -D "$2" "$1" 2>/dev/null | head -c 65536 | tr -d '\0' || true
+}
+
+resolve_cloud_url() {
+    local url="$1" direct="" fname="" probed=0
+    RESOLVED_URL="$url"
+    RESOLVED_FILENAME=""
+
+    case "$url" in
+        # ── Яндекс.Диск: disk.yandex.ru|com/d/…, yadi.sk/d/… ──
+        *disk.yandex.*/d/*|*disk.yandex.*/i/*|*yadi.sk/*)
+            info "Яндекс.Диск → запрашиваю прямую ссылку через API"
+            local resp
+            resp=$(curl -fsSL --connect-timeout 15 \
+                "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=$(_rc_urlencode "$url")" \
+                || true)
+            direct=$(printf '%s' "$resp" | sed -n 's/.*"href":"\([^"]*\)".*/\1/p' || true)
+            [[ -n "$direct" ]] || _rc_fail "Яндекс.Диск не отдал ссылку скачивания — файл публичный («по ссылке»)? Ответ API: $(printf '%.200s' "${resp:-пусто}")"
+            fname=$(_rc_urldecode "$(printf '%s' "$direct" | sed -n 's/.*[?&]filename=\([^&]*\).*/\1/p' || true)")
+            ;;
+
+        # ── Google Drive: /file/d/<ID>/, open?id=, uc?id= ──
+        *drive.google.com*|*docs.google.com/uc*)
+            info "Google Drive → строю прямую ссылку"
+            local id=""
+            case "$url" in
+                */file/d/*) id="${url#*/file/d/}"; id="${id%%[/?#]*}" ;;
+                *[?\&]id=*) id="${url#*[?\&]id=}"; id="${id%%[&#]*}" ;;
+            esac
+            [[ -n "$id" ]] || _rc_fail "Google Drive: не смог извлечь ID файла из ссылки"
+            # ID из чужой ссылки идёт в URL запроса — впускаем только charset реальных file-id,
+            # иначе '&' в id даёт подмену параметра (?id=REAL&id=TARGET)
+            [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || _rc_fail "Google Drive: подозрительный ID файла ('$id')"
+            direct="https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=t"
+            local hdrs probe uuid
+            hdrs=$(mktemp)
+            probe=$(_rc_probe "$direct" "$hdrs")
+            if [[ "${probe:0:2}" != "PK" && "$probe" == *'name="uuid"'* ]]; then
+                # страница «файл слишком большой для антивирус-проверки» — добираем uuid из формы
+                uuid=$(printf '%s' "$probe" | sed -n 's/.*name="uuid" value="\([^"]*\)".*/\1/p' | head -1 || true)
+                if [[ -n "$uuid" ]]; then
+                    direct="${direct}&uuid=${uuid}"
+                    probe=$(_rc_probe "$direct" "$hdrs")
+                fi
+            fi
+            fname=$(_rc_cd_filename "$hdrs" || true)
+            rm -f "$hdrs"
+            probed=1   # заголовки уже добыли — общий fallback ниже пусть не пробит повторно
+            if [[ "${probe:0:2}" != "PK" ]]; then
+                warn "Google Drive не отдал начало ZIP — проверьте «Доступ: всем, у кого есть ссылка»"
+            fi
+            ;;
+
+        # ── Dropbox ──
+        *dropbox.com/*)
+            info "Dropbox → прямая ссылка через dl.dropboxusercontent.com"
+            direct="${url/www.dropbox.com/dl.dropboxusercontent.com}"
+            direct="${direct/\/\/dropbox.com/\/\/dl.dropboxusercontent.com}"
+            direct="${direct//dl=0/dl=1}"
+            fname=$(_rc_urldecode "$(basename "${url%%\?*}")")
+            [[ "$fname" == *.* ]] || fname=""
+            ;;
+
+        # ── iCloud Drive: icloud.com/iclouddrive/<ID>#<имя> ──
+        *icloud.com/iclouddrive/*)
+            info "iCloud Drive → запрашиваю CloudKit"
+            local guid="${url#*icloud.com/iclouddrive/}"; guid="${guid%%[#?/]*}"
+            [[ -n "$guid" ]] || _rc_fail "iCloud: не смог извлечь ID из ссылки"
+            # guid попадает в JSON-тело POST-запроса — кавычка в нём ломает JSON и
+            # даёт подмену цели (resolve чужого shortGUID). Впускаем только валидный charset.
+            [[ "$guid" =~ ^[A-Za-z0-9_-]+$ ]] || _rc_fail "iCloud: подозрительный ID ('$guid')"
+            local resp
+            resp=$(curl -fsSL --connect-timeout 20 -X POST -H 'Content-Type: text/plain' \
+                --data "{\"shortGUIDs\":[{\"value\":\"${guid}\"}]}" \
+                'https://ckdatabasews.icloud.com/database/1/com.apple.cloudkit/production/public/records/resolve' \
+                || true)
+            direct=$(printf '%s' "$resp" | sed -n 's/.*"downloadURL":"\([^"]*\)".*/\1/p' | head -1 || true)
+            [[ -n "$direct" ]] || _rc_fail "iCloud не отдал downloadURL — ссылка точно «для всех»? Ответ: $(printf '%.200s' "${resp:-пусто}")"
+            direct="${direct//\\u0026/&}"
+            local nm ext fpat='${f}'
+            nm=$(printf '%s' "$resp" | sed -n 's/.*"name":{"value":"\([^"]*\)".*/\1/p' | head -1 || true)
+            ext=$(printf '%s' "$resp" | sed -n 's/.*"extension":{"value":"\([^"]*\)".*/\1/p' | head -1 || true)
+            [[ -n "$nm" ]] && fname="${nm}${ext:+.$ext}"
+            direct="${direct/"$fpat"/$(_rc_urlencode "${fname:-tour.zip}")}"
+            ;;
+
+        # ── OneDrive: 1drv.ms / onedrive.live.com ──
+        *1drv.ms/*|*onedrive.live.com/*)
+            info "OneDrive → прямая ссылка через shares-API"
+            local b64
+            b64=$(printf '%s' "$url" | base64 | tr -d '\n=' | tr '+/' '-_')
+            direct="https://api.onedrive.com/v1.0/shares/u!${b64}/root/content"
+            ;;
+
+        # ── Облако Mail.ru ──
+        *cloud.mail.ru/public/*)
+            info "Облако Mail.ru → запрашиваю сервер скачивания"
+            local mpath="${url#*cloud.mail.ru/public/}"; mpath="${mpath%%\?*}"
+            local disp base
+            disp=$(curl -fsSL --connect-timeout 15 'https://cloud.mail.ru/api/v2/dispatcher' || true)
+            base=$(printf '%s' "$disp" | sed -n 's/.*"weblink_get":\[{[^}]*"url":"\([^"]*\)".*/\1/p' || true)
+            [[ -n "$base" ]] || _rc_fail "Mail.ru не отдал сервер скачивания — сделай прямую ссылку или используй другой сервис"
+            direct="${base}/${mpath}"
+            fname=$(_rc_urldecode "$(basename "$mpath")")
+            ;;
+
+        # ── не облачная ссылка — как есть ──
+        *) return 0 ;;
+    esac
+
+    # имя не узнали из URL/API — пробуем Content-Disposition прямой ссылки
+    # (пропускаем, если ветку уже пробили — иначе лишний round-trip и трата одноразового токена)
+    if [[ -z "$fname" && "$probed" == 0 ]]; then
+        local hdrs2
+        hdrs2=$(mktemp)
+        _rc_probe "$direct" "$hdrs2" >/dev/null
+        fname=$(_rc_cd_filename "$hdrs2" || true)
+        rm -f "$hdrs2"
+    fi
+
+    RESOLVED_URL="$direct"
+    RESOLVED_FILENAME="$fname"
+    log "Прямая ссылка получена${fname:+ (файл: ${fname})}"
+    return 0
+}
+
 # ─── Скачивание архива ────────────────────────────────────────────────
 download_archive() {
     [[ -z "$ARCHIVE_SRC" ]] && err "Укажите архив через --archive"
@@ -318,6 +494,18 @@ download_archive() {
         rm -f "$ARCHIVE_FILE"
         err "Файл слишком мал ($size байт) — ошибка скачивания?"
     fi
+
+    # облачные сервисы при закрытом доступе отдают HTML-страницу вместо файла — ловим именно её.
+    # НЕ гейтим на ZIP-магию: extract_archive умеет ещё tar/tar.gz (не начинаются с PK).
+    local head_low
+    head_low=$(head -c 512 "$ARCHIVE_FILE" 2>/dev/null | tr -d '\0' | tr 'A-Z' 'a-z' || true)
+    case "$head_low" in
+        *'<!doctype'*|*'<html'*)
+            head -c 300 "$ARCHIVE_FILE" >&2; echo "" >&2
+            rm -f "$ARCHIVE_FILE"
+            err "Скачалась HTML-страница, не архив — по ссылке закрыт публичный доступ? Откройте «всем, у кого есть ссылка»."
+            ;;
+    esac
     log "Скачано: $(numfmt --to=iec "$size" 2>/dev/null || echo "${size} bytes")"
 }
 
@@ -489,6 +677,7 @@ write_nginx_block() {
     # Unquoted heredoc: ${SLUG}, ${WEBROOT} etc. expand; \$var stays literal
     cat > "$outfile" << NGINX_BLOCK_EOF
 
+    # >>> matterhub-root: ${SLUG} >>> (маркеры для чистой деинсталляции — не удалять)
     # ── Root CDN path rewrites for self-hosted HTML tour: ${SLUG} ──
     location /webgl-vendors/ {
         rewrite ^/(.*)\$ /${SLUG}/\$1 last;
@@ -529,6 +718,7 @@ write_nginx_block() {
     location /api/v1/ {
         rewrite ^/api/v1/(.*)\$ /${SLUG}/api/v1/\$1 last;
     }
+    # <<< matterhub-root: ${SLUG} <<<
 
     # ── Matterport self-hosted HTML tour: ${SLUG} ──
     location ^~ /${SLUG}/ {
@@ -637,7 +827,10 @@ inject_nginx_block() {
     fi
 
     # Бэкап
-    local bak="${NGINX_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+    # бэкап НЕ рядом с конфигом: nginx включает sites-enabled/* целиком,
+    # и .bak-копия с duplicate server ломает nginx -t
+    local bak_dir="/var/backups/matterhub"; mkdir -p "$bak_dir"
+    local bak="${bak_dir}/$(basename "$NGINX_CONF").bak.$(date +%Y%m%d_%H%M%S)"
     cp "$NGINX_CONF" "$bak"
     register_rollback "cp '${bak}' '${NGINX_CONF}' && nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null"
     log "Бэкап Nginx: $bak"
@@ -711,7 +904,10 @@ print('OK: блок вставлен')
 remove_html_tour_block() {
     info "Удаляю блок /${SLUG} из Nginx..."
 
-    local bak="${NGINX_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+    # бэкап НЕ рядом с конфигом: nginx включает sites-enabled/* целиком,
+    # и .bak-копия с duplicate server ломает nginx -t
+    local bak_dir="/var/backups/matterhub"; mkdir -p "$bak_dir"
+    local bak="${bak_dir}/$(basename "$NGINX_CONF").bak.$(date +%Y%m%d_%H%M%S)"
     cp "$NGINX_CONF" "$bak"
 
     python3 -c "
@@ -722,6 +918,14 @@ conf_path = sys.argv[2]
 
 with open(conf_path, 'r') as f:
     content = f.read()
+
+# 0) Надёжное удаление по маркерам (новые установки пишут их вокруг root-секции).
+#    Legacy-regex ниже оставлены для конфигов от старых версий скрипта.
+marker_pat = (
+    r'\n[^\n]*# >>> matterhub-root: ' + re.escape(slug) + r' >>>.*?'
+    r'# <<< matterhub-root: ' + re.escape(slug) + r' <<<[^\n]*'
+)
+content = re.sub(marker_pat, '', content, flags=re.DOTALL)
 
 # 1) Remove root CDN rewrites for this slug
 cdn_pat = (
@@ -735,7 +939,8 @@ content = re.sub(cdn_pat, '', content, flags=re.DOTALL)
 api_pat = (
     r'\n\s*# ── Root API rewrites for self-hosted HTML tour: '
     + re.escape(slug)
-    + r' ──\n.*?(?=\n\s*# ── Matterport|\n\s*location [^/\s]|\n\s*location /av3|\n\s*location /api/avatar|\n\s*location \^~)'
+    # [^/\s~]: не обрывать матч на «location ~ ^/api/mp/...» внутри самой секции
+    + r' ──\n.*?(?=\n\s*# ── Matterport|\n\s*location [^/\s~]|\n\s*location /av3|\n\s*location /api/avatar|\n\s*location \^~)'
 )
 content = re.sub(api_pat, '', content, flags=re.DOTALL)
 
@@ -878,10 +1083,16 @@ main() {
         exit 0
     fi
 
-    # Авто-извлечение slug из имени архива
+    # Облачная шаринг-ссылка → прямая (заодно узнаём имя файла для слага)
+    if [[ -n "$ARCHIVE_SRC" && "$ARCHIVE_SRC" =~ ^https?:// ]]; then
+        resolve_cloud_url "$ARCHIVE_SRC"
+        ARCHIVE_SRC="$RESOLVED_URL"
+    fi
+
+    # Авто-извлечение slug из имени архива (для облачных — из имени файла в сервисе)
     if [[ -z "$SLUG" && -n "$ARCHIVE_SRC" ]]; then
         local fname
-        fname=$(basename "$ARCHIVE_SRC")
+        fname="${RESOLVED_FILENAME:-$(basename "$ARCHIVE_SRC")}"
         fname="${fname%%.*}"
         fname=$(echo "$fname" | tr -cd '[:alnum:]_-')
         if [[ -n "$fname" ]]; then
@@ -913,6 +1124,11 @@ main() {
         echo -en "${CYAN}[?]${NC} URL или путь к архиву: "
         read -r ARCHIVE_SRC
         [[ -z "$ARCHIVE_SRC" ]] && err "Архив обязателен"
+        # интерактивно введённая облачная ссылка → прямая
+        if [[ "$ARCHIVE_SRC" =~ ^https?:// ]]; then
+            resolve_cloud_url "$ARCHIVE_SRC"
+            ARCHIVE_SRC="$RESOLVED_URL"
+        fi
     fi
 
     detect_environment
