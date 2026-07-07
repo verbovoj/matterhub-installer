@@ -24,7 +24,15 @@ if [ ! -t 0 ]; then
         curl -sSL "$_URL" -o "$_SELF" 2>/dev/null || wget -qO "$_SELF" "$_URL" 2>/dev/null
     fi
     chmod +x "$_SELF"
-    exec bash "$_SELF" "$@" < /dev/tty
+    # /dev/tty ОТКРЫВАЕТСЯ — интерактивный curl|bash (человек за терминалом), читаем ввод с него.
+    # Не открывается — ssh без -t / cron / CI: интерактив невозможен, stdin в /dev/null.
+    # ВАЖНО: нода /dev/tty существует всегда (`-e` бесполезен), но без управляющего терминала
+    # её open() даёт ENXIO «No such device or address» — проверяем именно открываемость.
+    if ( exec < /dev/tty ) 2>/dev/null; then
+        exec bash "$_SELF" "$@" < /dev/tty
+    else
+        exec bash "$_SELF" "$@" < /dev/null
+    fi
 fi
 
 set -euo pipefail
